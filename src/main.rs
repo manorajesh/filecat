@@ -2,19 +2,33 @@ use clap::Parser;
 use colored::*;
 use std::collections::HashSet;
 use std::fs;
-use std::io::{ self, Read };
+use std::io::{ self, Read, Write };
 use std::path::{ Path, PathBuf };
 
 /// Macro to print error messages with "error" colored red or "warning" colored yellow
 macro_rules! print_error {
-    ($($arg:tt)*) => {
-        eprintln!("[{}] {}", "error".red(), format!($($arg)*));
+    (
+        $use_color:expr,
+        $($arg:tt)*
+    ) => {
+        if $use_color {
+            eprintln!("[{}] {}", "error".red(), format!($($arg)*));
+        } else {
+            eprintln!("[error] {}", format!($($arg)*));
+        }
     };
 }
 
 macro_rules! print_warning {
-    ($($arg:tt)*) => {
-        eprintln!("[{}] {}", "warning".yellow(), format!($($arg)*));
+    (
+        $use_color:expr,
+        $($arg:tt)*
+    ) => {
+        if $use_color {
+            eprintln!("[{}] {}", "warning".yellow(), format!($($arg)*));
+        } else {
+            eprintln!("[warning] {}", format!($($arg)*));
+        }
     };
 }
 
@@ -44,31 +58,48 @@ struct Args {
     /// Print file contents in hexadecimal format
     #[arg(long)]
     hex: bool,
+
+    /// Disable colored output
+    #[arg(long)]
+    no_color: bool,
+
+    /// Write output to a file
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
 }
 
 struct FileCat {
     header: String,
     verbose: bool,
     hex: bool,
+    use_color: bool,
+    output: Option<PathBuf>,
 }
 
 impl FileCat {
-    fn new(header: String, verbose: bool, hex: bool) -> Self {
-        FileCat { header, verbose, hex }
+    fn new(
+        header: String,
+        verbose: bool,
+        hex: bool,
+        use_color: bool,
+        output: Option<PathBuf>
+    ) -> Self {
+        FileCat { header, verbose, hex, use_color, output }
     }
 
     fn process_path(
         &self,
         path: &Path,
         recursive: bool,
-        exclude_set: &HashSet<PathBuf>
+        exclude_set: &HashSet<PathBuf>,
+        output: &mut Box<dyn Write>
     ) -> io::Result<()> {
         if path.is_dir() {
-            self.process_dir(path, recursive, exclude_set)
+            self.process_dir(path, recursive, exclude_set, output)
         } else if path.is_file() && !exclude_set.contains(path) {
-            self.process_file(path)
+            self.process_file(path, output)
         } else {
-            print_error!("{} is not a valid file or directory", path.display());
+            print_error!(self.use_color, "{} is not a valid file or directory", path.display());
             Ok(())
         }
     }
@@ -77,7 +108,8 @@ impl FileCat {
         &self,
         dir: &Path,
         recursive: bool,
-        exclude_set: &HashSet<PathBuf>
+        exclude_set: &HashSet<PathBuf>,
+        output: &mut Box<dyn Write>
     ) -> io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
@@ -86,45 +118,50 @@ impl FileCat {
                 continue;
             }
             if path.is_file() {
-                self.process_file(&path)?;
+                self.process_file(&path, output)?;
             } else if recursive && path.is_dir() {
-                self.process_dir(&path, recursive, exclude_set)?;
+                self.process_dir(&path, recursive, exclude_set, output)?;
             }
         }
         Ok(())
     }
 
-    fn process_file(&self, file: &Path) -> io::Result<()> {
+    fn process_file(&self, file: &Path, output: &mut Box<dyn Write>) -> io::Result<()> {
         let mut file_content = Vec::new();
         fs::File::open(file)?.read_to_end(&mut file_content)?;
         let header = self.header.replace("{file}", &file.display().to_string());
-        println!("{}", header.blue().bold());
+
+        if self.use_color {
+            writeln!(output, "{}", header.blue().bold())?;
+        } else {
+            writeln!(output, "{}", header)?;
+        }
 
         if self.hex {
-            self.print_hex(&file_content);
+            self.print_hex(&file_content, output)?;
         } else {
-            self.print_content(&file_content);
+            self.print_content(&file_content, output)?;
         }
 
         Ok(())
     }
 
-    fn print_hex(&self, content: &[u8]) {
+    fn print_hex(&self, content: &[u8], output: &mut Box<dyn Write>) -> io::Result<()> {
         for (i, byte) in content.iter().enumerate() {
             if i % 16 == 0 {
                 if i != 0 {
-                    println!();
+                    writeln!(output)?;
                 }
-                print!("{:08x}  ", i);
+                write!(output, "{:08x}  ", i)?;
             }
-            print!("{:02x} ", byte);
+            write!(output, "{:02x} ", byte)?;
         }
-        println!();
+        writeln!(output)
     }
 
-    fn print_content(&self, content: &[u8]) {
+    fn print_content(&self, content: &[u8], output: &mut Box<dyn Write>) -> io::Result<()> {
         if self.verbose {
-            print!("{}", String::from_utf8_lossy(content));
+            write!(output, "{}", String::from_utf8_lossy(content))?;
         } else {
             for &byte in content {
                 if
@@ -134,13 +171,14 @@ impl FileCat {
                     byte == b' ' ||
                     byte == b'\r'
                 {
-                    print!("{}", byte as char);
+                    write!(output, "{}", byte as char)?;
                 } else {
-                    print!("{:?} ", byte as char);
+                    write!(output, "{:?} ", byte as char)?;
                 }
             }
-            println!();
+            writeln!(output)?;
         }
+        Ok(())
     }
 }
 
@@ -149,19 +187,31 @@ fn main() -> io::Result<()> {
     let exclude_set: HashSet<PathBuf> = args.exclude.iter().map(PathBuf::from).collect();
 
     if !args.header.contains("{file}") {
-        print_warning!("Header does not contain the placeholder {{file}}");
+        print_warning!(true, "Header does not contain the placeholder {{file}}");
     }
 
     if args.paths.is_empty() {
-        print_error!("No files or directories provided");
+        print_error!(true, "No files or directories provided");
         return Ok(());
     }
 
-    let viewer = FileCat::new(args.header, args.verbose, args.hex);
+    let viewer = FileCat::new(
+        args.header,
+        args.verbose,
+        args.hex,
+        !args.no_color,
+        args.output.clone()
+    );
+
+    let mut output: Box<dyn Write> = if let Some(output_path) = &args.output {
+        Box::new(fs::File::create(output_path)?)
+    } else {
+        Box::new(io::stdout())
+    };
 
     for path in &args.paths {
         let path = Path::new(path);
-        viewer.process_path(path, args.recursive, &exclude_set)?;
+        viewer.process_path(path, args.recursive, &exclude_set, &mut output)?;
     }
 
     Ok(())
