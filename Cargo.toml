@@ -3,7 +3,19 @@ name = "filecat"
 version = "0.1.0"
 edition = "2021"
 author = "Mano Rajesh"
+readme = "README.md"
+homepage = "https://github.com/manorajesh/filecat"
+repository = "https://github.com/manorajesh/filecat"
+keywords = ["cli", "file", "reader", "cat", "print", "color", "header"]
+categories = ["command-line-utilities"]
+description = "Print file contents with colored headers"
+license = "MIT"
 
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
 colored = "2.1.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = 0
