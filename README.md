@@ -1,11 +1,15 @@
 # filecat
 
+![Crates.io Version](https://img.shields.io/crates/v/filecat)
+![Crates.io License](https://img.shields.io/crates/l/filecat)
+![Crates.io Total Downloads](https://img.shields.io/crates/d/filecat)
+
 `filecat` is a command-line tool for printing file contents with titles.
 
 ```shell
 Print file contents with colored headers
 
-Usage: filecat [OPTIONS] [PATHS]...
+Usage: filecat.exe [OPTIONS] [PATHS]...
 
 Arguments:
   [PATHS]...  File or directory paths
@@ -15,10 +19,12 @@ Options:
   -e, --exclude <PATH>   Exclude specific files or directories
       --header <HEADER>  Custom header format [default: "==> {file}"]
   -v, --verbose          Do not show non-printable characters
-      --hex              Print file contents in hexadecimal format
+      --hex              Print non-text file contents in hexadecimal format
       --color            Enable colored output of headers
       --no-log-color     Disable colored output of log messages
   -o, --output <FILE>    Write output to a file
+      --counter          Enable file counter
+      --skip-non-text    Skip non-text files but still print headers
   -h, --help             Print help
   -V, --version          Print version
 ```

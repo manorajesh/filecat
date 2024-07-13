@@ -32,6 +32,19 @@ macro_rules! print_warning {
     };
 }
 
+macro_rules! print_info {
+    (
+        $use_color:expr,
+        $($arg:tt)*
+    ) => {
+        if $use_color {
+            eprintln!("[{}] {}", "info".bright_blue(), format!($($arg)*));
+        } else {
+            eprintln!("[info] {}", format!($($arg)*));
+        }
+    };
+}
+
 /// filecat: print file contents with headers
 #[derive(Parser, Debug)]
 #[command(name = "filecat", author, version, about, long_about = None)]
@@ -55,7 +68,7 @@ struct Args {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Print file contents in hexadecimal format
+    /// Print non-text file contents in hexadecimal format
     #[arg(long)]
     hex: bool,
 
@@ -70,6 +83,14 @@ struct Args {
     /// Write output to a file
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
+
+    /// Enable file counter
+    #[arg(long)]
+    counter: bool,
+
+    /// Skip non-text files but still print headers
+    #[arg(long)]
+    skip_non_text: bool,
 }
 
 struct FileCat {
@@ -78,6 +99,10 @@ struct FileCat {
     hex: bool,
     use_color: bool,
     output: Option<PathBuf>,
+    counter: bool,
+    skip_non_text: bool,
+    file_count: usize,
+    use_log_color: bool,
 }
 
 impl FileCat {
@@ -86,13 +111,26 @@ impl FileCat {
         verbose: bool,
         hex: bool,
         use_color: bool,
-        output: Option<PathBuf>
+        output: Option<PathBuf>,
+        counter: bool,
+        skip_non_text: bool,
+        use_log_color: bool
     ) -> Self {
-        FileCat { header, verbose, hex, use_color, output }
+        FileCat {
+            header,
+            verbose,
+            hex,
+            use_color,
+            output,
+            counter,
+            skip_non_text,
+            file_count: 0,
+            use_log_color,
+        }
     }
 
     fn process_path(
-        &self,
+        &mut self,
         path: &Path,
         recursive: bool,
         exclude_set: &HashSet<PathBuf>,
@@ -103,13 +141,13 @@ impl FileCat {
         } else if path.is_file() && !exclude_set.contains(path) {
             self.process_file(path, output)
         } else {
-            print_error!(self.use_color, "{} is not a valid file or directory", path.display());
+            print_error!(self.use_log_color, "{} is not a valid file or directory", path.display());
             Ok(())
         }
     }
 
     fn process_dir(
-        &self,
+        &mut self,
         dir: &Path,
         recursive: bool,
         exclude_set: &HashSet<PathBuf>,
@@ -130,24 +168,41 @@ impl FileCat {
         Ok(())
     }
 
-    fn process_file(&self, file: &Path, output: &mut Box<dyn Write>) -> io::Result<()> {
+    fn process_file(&mut self, file: &Path, output: &mut Box<dyn Write>) -> io::Result<()> {
         let mut file_content = Vec::new();
         fs::File::open(file)?.read_to_end(&mut file_content)?;
         let header = self.header.replace("{file}", &file.display().to_string());
 
-        if self.use_color {
+        if self.use_log_color {
             writeln!(output, "{}", header.blue().bold())?;
         } else {
             writeln!(output, "{}", header)?;
         }
 
-        if self.hex {
-            self.print_hex(&file_content, output)?;
-        } else {
-            self.print_content(&file_content, output)?;
+        if !self.is_text_file(&file_content) {
+            if self.skip_non_text {
+                writeln!(output, "Non-text file")?;
+                return Ok(());
+            } else if self.hex {
+                self.print_hex(&file_content, output)?;
+                return Ok(());
+            }
+        }
+
+        self.print_content(&file_content, output)?;
+
+        if self.counter {
+            self.file_count += 1;
+            print_info!(self.use_log_color, "Files processed so far: {}", self.file_count);
         }
 
         Ok(())
+    }
+
+    fn is_text_file(&self, content: &[u8]) -> bool {
+        content
+            .iter()
+            .all(|&byte| (byte.is_ascii_graphic() || byte.is_ascii_whitespace() || byte == b'\r'))
     }
 
     fn print_hex(&self, content: &[u8], output: &mut Box<dyn Write>) -> io::Result<()> {
@@ -214,7 +269,16 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    let viewer = FileCat::new(args.header, args.verbose, args.hex, use_color, args.output.clone());
+    let mut viewer = FileCat::new(
+        args.header,
+        args.verbose,
+        args.hex,
+        use_color,
+        args.output.clone(),
+        args.counter,
+        args.skip_non_text,
+        use_log_color
+    );
 
     let mut output: Box<dyn Write> = if let Some(output_path) = &args.output {
         Box::new(fs::File::create(output_path)?)
@@ -225,6 +289,10 @@ fn main() -> io::Result<()> {
     for path in &args.paths {
         let path = Path::new(path);
         viewer.process_path(path, args.recursive, &exclude_set, &mut output)?;
+    }
+
+    if args.counter {
+        print_info!(use_log_color, "Total files processed: {}", viewer.file_count);
     }
 
     Ok(())
