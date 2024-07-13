@@ -127,10 +127,16 @@ impl FileCat {
             print!("{}", String::from_utf8_lossy(content));
         } else {
             for &byte in content {
-                if byte.is_ascii_graphic() || byte == b'\n' || byte == b'\t' || byte == b' ' {
+                if
+                    byte.is_ascii_graphic() ||
+                    byte == b'\n' ||
+                    byte == b'\t' ||
+                    byte == b' ' ||
+                    byte == b'\r'
+                {
                     print!("{}", byte as char);
                 } else {
-                    print!(".");
+                    print!("{:?} ", byte as char);
                 }
             }
             println!();
