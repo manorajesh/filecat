@@ -59,9 +59,13 @@ struct Args {
     #[arg(long)]
     hex: bool,
 
-    /// Disable colored output
+    /// Enable colored output of headers
     #[arg(long)]
-    no_color: bool,
+    color: bool,
+
+    /// Disable colored output of log messages
+    #[arg(long)]
+    no_log_color: bool,
 
     /// Write output to a file
     #[arg(short, long, value_name = "FILE")]
@@ -186,22 +190,31 @@ fn main() -> io::Result<()> {
     let args = Args::parse();
     let exclude_set: HashSet<PathBuf> = args.exclude.iter().map(PathBuf::from).collect();
 
+    let use_log_color = !args.no_log_color;
+    let use_color = args.color;
+
+    if let Some(output_path) = &args.output {
+        if output_path.is_dir() {
+            print_error!(use_log_color, "Output path is a directory");
+            return Ok(());
+        }
+
+        if output_path.exists() {
+            print_error!(use_log_color, "Output file already exists");
+            return Ok(());
+        }
+    }
+
     if !args.header.contains("{file}") {
-        print_warning!(true, "Header does not contain the placeholder {{file}}");
+        print_warning!(use_log_color, "Header does not contain the placeholder {{file}}");
     }
 
     if args.paths.is_empty() {
-        print_error!(true, "No files or directories provided");
+        print_error!(use_log_color, "No files or directories provided");
         return Ok(());
     }
 
-    let viewer = FileCat::new(
-        args.header,
-        args.verbose,
-        args.hex,
-        !args.no_color,
-        args.output.clone()
-    );
+    let viewer = FileCat::new(args.header, args.verbose, args.hex, use_color, args.output.clone());
 
     let mut output: Box<dyn Write> = if let Some(output_path) = &args.output {
         Box::new(fs::File::create(output_path)?)
