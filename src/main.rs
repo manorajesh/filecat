@@ -173,7 +173,7 @@ impl FileCat {
         fs::File::open(file)?.read_to_end(&mut file_content)?;
         let header = self.header.replace("{file}", &file.display().to_string());
 
-        if self.use_log_color {
+        if self.use_color {
             writeln!(output, "{}", header.blue().bold())?;
         } else {
             writeln!(output, "{}", header)?;
