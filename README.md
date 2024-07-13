@@ -3,7 +3,7 @@
 `filecat` is a command-line tool for printing file contents with titles.
 
 ```shell
-filecat: print file contents with headers
+Print file contents with colored headers
 
 Usage: filecat [OPTIONS] [PATHS]...
 
@@ -16,6 +16,9 @@ Options:
       --header <HEADER>  Custom header format [default: "==> {file}"]
   -v, --verbose          Do not show non-printable characters
       --hex              Print file contents in hexadecimal format
+      --color            Enable colored output of headers
+      --no-log-color     Disable colored output of log messages
+  -o, --output <FILE>    Write output to a file
   -h, --help             Print help
   -V, --version          Print version
 ```
