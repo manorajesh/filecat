@@ -1,9 +1,9 @@
 use clap::Parser;
 use colored::*;
-use std::collections::HashSet;
+use glob::{glob, Pattern};
 use std::fs;
-use std::io::{ self, Read, Write };
-use std::path::{ Path, PathBuf };
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 /// Macro to print error messages with "error" colored red or "warning" colored yellow
 macro_rules! print_error {
@@ -49,15 +49,16 @@ macro_rules! print_info {
 #[derive(Parser, Debug)]
 #[command(name = "filecat", author, version, about, long_about = None)]
 struct Args {
-    /// File or directory paths
+    /// File or directory paths (supports glob patterns like src/*.rs)
+    #[arg(value_parser = parse_glob_pattern)]
     paths: Vec<String>,
 
     /// Recursively read directories
     #[arg(short, long)]
     recursive: bool,
 
-    /// Exclude specific files or directories
-    #[arg(short, long, value_name = "PATH")]
+    /// Exclude specific files or directories (supports glob patterns e.g. *.rs, src/**/*.rs)
+    #[arg(short, long, value_name = "PATTERN", value_parser = parse_glob_pattern)]
     exclude: Vec<String>,
 
     /// Custom header format
@@ -103,6 +104,7 @@ struct FileCat {
     skip_non_text: bool,
     file_count: usize,
     use_log_color: bool,
+    exclude_patterns: Vec<Pattern>,
 }
 
 impl FileCat {
@@ -114,9 +116,22 @@ impl FileCat {
         output: Option<PathBuf>,
         counter: bool,
         skip_non_text: bool,
-        use_log_color: bool
-    ) -> Self {
-        FileCat {
+        use_log_color: bool,
+        exclude_patterns: &[String],
+    ) -> io::Result<Self> {
+        let patterns = exclude_patterns
+            .iter()
+            .map(|p| {
+                Pattern::new(p).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid pattern '{}': {}", p, e),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(FileCat {
             header,
             verbose,
             hex,
@@ -126,22 +141,52 @@ impl FileCat {
             skip_non_text,
             file_count: 0,
             use_log_color,
+            exclude_patterns: patterns,
+        })
+    }
+
+    fn normalize_path(path: &str) -> String {
+        path.replace('\\', "/").replace("./", "")
+    }
+
+    fn should_exclude(&self, path: &Path) -> bool {
+        let path_str = Self::normalize_path(&path.display().to_string());
+
+        if self.exclude_patterns.iter().any(|pattern| {
+            let pattern_str = Self::normalize_path(pattern.as_str());
+            path_str == pattern_str || path_str == format!("./{}", pattern_str)
+        }) {
+            return true;
         }
+
+        self.exclude_patterns.iter().any(|pattern| {
+            let normalized_pattern = Self::normalize_path(pattern.as_str());
+            Pattern::new(&normalized_pattern)
+                .map(|p| p.matches(&path_str))
+                .unwrap_or(false)
+        })
     }
 
     fn process_path(
         &mut self,
         path: &Path,
         recursive: bool,
-        exclude_set: &HashSet<PathBuf>,
-        output: &mut Box<dyn Write>
+        output: &mut Box<dyn Write>,
     ) -> io::Result<()> {
+        if self.should_exclude(path) {
+            return Ok(());
+        }
+
         if path.is_dir() {
-            self.process_dir(path, recursive, exclude_set, output)
-        } else if path.is_file() && !exclude_set.contains(path) {
+            self.process_dir(path, recursive, output)
+        } else if path.is_file() {
             self.process_file(path, output)
         } else {
-            print_error!(self.use_log_color, "{} is not a valid file or directory", path.display());
+            print_error!(
+                self.use_log_color,
+                "{} is not a valid file or directory",
+                path.display()
+            );
             Ok(())
         }
     }
@@ -150,19 +195,20 @@ impl FileCat {
         &mut self,
         dir: &Path,
         recursive: bool,
-        exclude_set: &HashSet<PathBuf>,
-        output: &mut Box<dyn Write>
+        output: &mut Box<dyn Write>,
     ) -> io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            if exclude_set.contains(&path) {
+
+            if self.should_exclude(&path) {
                 continue;
             }
+
             if path.is_file() {
                 self.process_file(&path, output)?;
             } else if recursive && path.is_dir() {
-                self.process_dir(&path, recursive, exclude_set, output)?;
+                self.process_dir(&path, recursive, output)?;
             }
         }
         Ok(())
@@ -171,7 +217,9 @@ impl FileCat {
     fn process_file(&mut self, file: &Path, output: &mut Box<dyn Write>) -> io::Result<()> {
         let mut file_content = Vec::new();
         fs::File::open(file)?.read_to_end(&mut file_content)?;
-        let header = self.header.replace("{file}", &file.display().to_string());
+
+        let display_path = Self::normalize_path(&file.display().to_string());
+        let header = self.header.replace("{file}", &display_path);
 
         if self.use_color {
             writeln!(output, "{}", header.blue().bold())?;
@@ -193,7 +241,11 @@ impl FileCat {
 
         if self.counter {
             self.file_count += 1;
-            print_info!(self.use_log_color, "Files processed so far: {}", self.file_count);
+            print_info!(
+                self.use_log_color,
+                "Files processed so far: {}",
+                self.file_count
+            );
         }
 
         Ok(())
@@ -223,12 +275,11 @@ impl FileCat {
             write!(output, "{}", String::from_utf8_lossy(content))?;
         } else {
             for &byte in content {
-                if
-                    byte.is_ascii_graphic() ||
-                    byte == b'\n' ||
-                    byte == b'\t' ||
-                    byte == b' ' ||
-                    byte == b'\r'
+                if byte.is_ascii_graphic()
+                    || byte == b'\n'
+                    || byte == b'\t'
+                    || byte == b' '
+                    || byte == b'\r'
                 {
                     write!(output, "{}", byte as char)?;
                 } else {
@@ -241,12 +292,46 @@ impl FileCat {
     }
 }
 
+fn parse_glob_pattern(pattern: &str) -> Result<String, String> {
+    Pattern::new(pattern).map_err(|e| format!("Invalid pattern '{}': {}", pattern, e))?;
+    Ok(pattern.to_string())
+}
+
+fn expand_glob_patterns(patterns: &[String]) -> io::Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for pattern in patterns {
+        let normalized_pattern = pattern.replace('\\', "/");
+        match glob(&normalized_pattern) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(path) => paths.push(path),
+                        Err(e) => print_warning!(true, "Failed to read path: {}", e),
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid pattern '{}': {}", pattern, e),
+                ))
+            }
+        }
+    }
+    Ok(paths)
+}
+
 fn main() -> io::Result<()> {
     let args = Args::parse();
-    let exclude_set: HashSet<PathBuf> = args.exclude.iter().map(PathBuf::from).collect();
-
     let use_log_color = !args.no_log_color;
     let use_color = args.color;
+
+    let expanded_paths = expand_glob_patterns(&args.paths)?;
+
+    if expanded_paths.is_empty() {
+        print_error!(use_log_color, "No matching files found");
+        return Ok(());
+    }
 
     if let Some(output_path) = &args.output {
         if output_path.is_dir() {
@@ -261,7 +346,10 @@ fn main() -> io::Result<()> {
     }
 
     if !args.header.contains("{file}") {
-        print_warning!(use_log_color, "Header does not contain the placeholder {{file}}");
+        print_warning!(
+            use_log_color,
+            "Header does not contain the placeholder {{file}}"
+        );
     }
 
     if args.paths.is_empty() {
@@ -277,8 +365,9 @@ fn main() -> io::Result<()> {
         args.output.clone(),
         args.counter,
         args.skip_non_text,
-        use_log_color
-    );
+        use_log_color,
+        &args.exclude,
+    )?;
 
     let mut output: Box<dyn Write> = if let Some(output_path) = &args.output {
         Box::new(fs::File::create(output_path)?)
@@ -286,13 +375,16 @@ fn main() -> io::Result<()> {
         Box::new(io::stdout())
     };
 
-    for path in &args.paths {
-        let path = Path::new(path);
-        viewer.process_path(path, args.recursive, &exclude_set, &mut output)?;
+    for path in &expanded_paths {
+        viewer.process_path(path, args.recursive, &mut output)?;
     }
 
     if args.counter {
-        print_info!(use_log_color, "Total files processed: {}", viewer.file_count);
+        print_info!(
+            use_log_color,
+            "Total files processed: {}",
+            viewer.file_count
+        );
     }
 
     Ok(())
